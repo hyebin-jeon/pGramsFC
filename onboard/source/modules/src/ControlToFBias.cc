@@ -19,6 +19,7 @@ anlnext::ANLStatus ControlToFBias::mod_define() {
   define_parameter("starlink_topic", &mod_class::starlinkTopic_);
   define_parameter("topic", &mod_class::topic_);
   define_parameter("timeout_usec", &mod_class::timeout_);
+  define_parameter("failures_before_mode_reset", &mod_class::failuresBeforeModeReset_);
   return AS_OK;
 }
 
@@ -49,8 +50,15 @@ ANLStatus ControlToFBias::mod_initialize() {
     treatError();
     return AS_OK;
   }
-  controller_->disableDataStream();
-  controller_->setMode(ToFBiasController::TofBiasMode::AUTO);
+  //controller_->disableDataStream();
+  //controller_->setMode(ToFBiasController::TofBiasMode::AUTO);
+
+  if (restoreAutoMode() < 0) {
+    // Board did not answer. needModeReset_ is set, so it is retried at the next summary timing.
+    treatError();
+    return AS_OK;
+  }
+
   controller_->refresh();
   return AS_OK;
 }
@@ -78,13 +86,19 @@ ANLStatus ControlToFBias::mod_analyze() {
       treatError();
       return AS_OK;
     }
-    const int ret2 = controller_->disableDataStream();
-    if (ret2 < 0) {
-      treatError();
-      return AS_OK;
-    }
-    const int ret3 = controller_->setMode(ToFBiasController::TofBiasMode::AUTO);
-    if (ret3 < 0) {
+    //const int ret2 = controller_->disableDataStream();
+    //if (ret2 < 0) {
+    //  treatError();
+    //  return AS_OK;
+    //}
+    //const int ret3 = controller_->setMode(ToFBiasController::TofBiasMode::AUTO);
+    //if (ret3 < 0) {
+    //  treatError();
+    //  return AS_OK;
+    //}
+
+    if( restoreAutoMode() < 0 ) {
+      // e.g. MCU is still booting after the port came back. Retried at the next summary timing.
       treatError();
       return AS_OK;
     }
@@ -124,9 +138,19 @@ ANLStatus ControlToFBias::mod_analyze() {
 
   const auto now = std::chrono::steady_clock::now();
   if (now - lastReceivedTime_ > duration_) {
+    if (needModeReset_) {
+      // The board stopped responding before. Send "mode auto" again before taking the summary.
+      if (restoreAutoMode() < 0) {
+        treatError();
+        lastReceivedTime_ = now; // retry after duration_, not at every loop
+        return AS_OK;
+      }
+    }
+
     telemetryStr_.clear();
     const int packet_result = controller_->getOnePacket(telemetryStr_);
     if (packet_result >= 0) {
+      consecutiveFailures_ = 0;
       if (chatter_ > 0) {
         std::cout << module_id() << ": Summary output was taken" << std::endl;
       }
@@ -136,6 +160,8 @@ ANLStatus ControlToFBias::mod_analyze() {
       sendPacket(telemetryStr_, TelemetryCodes::HUB_Tof_Bias_summary);
     }
     else {
+      ++consecutiveFailures_;
+      if( consecutiveFailures_ >= failuresBeforeModeReset_)  needModeReset_ = true;
       treatError();
     }
     lastReceivedTime_ = now;
@@ -227,6 +253,23 @@ void ControlToFBias::treatError() {
     singleton_self()->sendTelemetry_->getErrorManager()->setError(ErrorType::TOF_BIAS_COM_ERROR);
   }
   controller_->refresh();
+}
+
+int ControlToFBias::restoreAutoMode() {
+  const int ret = controller_->disableDataStream();
+  if (ret < 0) {
+    needModeReset_ = true;
+    return ret;
+  }
+  const int ret2 = controller_->setMode(ToFBiasController::TofBiasMode::AUTO);
+  if (ret2 < 0) {
+    needModeReset_ = true;
+    return ret2;
+  }
+  needModeReset_ = false;
+  consecutiveFailures_ = 0;
+  std::cout << module_id() << ": ToF Bias mode was set to auto" << std::endl;
+  return 0;
 }
 
 int ControlToFBias::queryFullOutput() {

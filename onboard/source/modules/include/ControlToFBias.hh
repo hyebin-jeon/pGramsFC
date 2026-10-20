@@ -73,6 +73,11 @@ private:
   int minDurationSec_ = 1;
   int chatter_ = 0;
 
+  /// hyebin: Recovery of the TOF bias control board mode after the board stops responding (e.g. power cycle)
+  bool needModeReset_           = false; // true: "data off" + "mode auto" must be (re)sent
+  int  consecutiveFailures_     = 0;     // number of consecutive summary failures
+  int  failuresBeforeModeReset_ = 2;     // failures needed before setting needModeReset_
+
   int qos_ = 0;
   std::string topic_ = "TB_Telemetry";
   std::string starlinkTopic_ = "TB_Telemetry_Starlink";
@@ -81,6 +86,7 @@ private:
 
   void treatError();
   void sendPacket(const std::string &str, ::pgrams::communication::TelemetryCodes code);
+  int restoreAutoMode(); // hyebin
 };
 } // namespace gramsballoon::pgrams
 #endif // GB_ControlTofBias_hh
